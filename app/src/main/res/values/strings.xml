@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CropGuard</string>
+    <string name="error_no_connection_title">Không có kết nối mạng</string>
+    <string name="error_no_connection_subtitle">Vui lòng kiểm tra kết nối Internet và thử lại</string>
+    <string name="error_retry_button">Thử lại</string>
+</resources>

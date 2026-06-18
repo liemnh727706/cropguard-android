@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Theme chính của app -->
+    <style name="Theme.CropGuard" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/cropguard_green</item>
+        <item name="colorPrimaryDark">@color/cropguard_green_dark</item>
+        <item name="colorAccent">@color/cropguard_green_light</item>
+        <item name="android:statusBarColor">@color/cropguard_green_dark</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+
+    <!-- Theme splash screen: hiện logo xanh ngay khi mở app, tránh màn hình trắng giật -->
+    <style name="Theme.CropGuard.Splash" parent="Theme.CropGuard">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+
+</resources>
