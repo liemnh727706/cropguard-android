@@ -8,10 +8,13 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.View
 import android.webkit.*
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -25,6 +28,10 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraPhotoUri: Uri? = null
     private var pendingCameraPermissionRequest: (() -> Unit)? = null
+
+    private val loadTimeoutHandler = Handler(Looper.getMainLooper())
+    private var loadTimeoutRunnable: Runnable? = null
+    private val LOAD_TIMEOUT_MS = 20_000L  // 20 giây - nếu trang chưa load xong, coi như lỗi mạng
 
     // ── Result launchers ─────────────────────────────────────────
     private val fileChooserLauncher: ActivityResultLauncher<Intent> =
@@ -76,12 +83,26 @@ class MainActivity : AppCompatActivity() {
 
         setupWebView()
         setupSwipeRefresh()
+        setupBackPressHandler()
 
         binding.btnRetry.setOnClickListener { retryLoad() }
 
         if (savedInstanceState == null) {
             binding.webView.loadUrl(Config.BASE_URL)
         }
+    }
+
+    private fun setupBackPressHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (binding.webView.canGoBack()) {
+                    binding.webView.goBack()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 
     private fun setupSwipeRefresh() {
@@ -149,12 +170,15 @@ class MainActivity : AppCompatActivity() {
             super.onPageStarted(view, url, favicon)
             binding.progressBar.visibility = View.VISIBLE
             binding.errorView.visibility = View.GONE
+            binding.webView.visibility = View.VISIBLE
+            startLoadTimeoutWatchdog()
         }
 
         override fun onPageFinished(view: WebView, url: String?) {
             super.onPageFinished(view, url)
             binding.progressBar.visibility = View.GONE
             binding.swipeRefresh.isRefreshing = false
+            cancelLoadTimeoutWatchdog()
         }
 
         override fun onReceivedError(
@@ -168,6 +192,8 @@ class MainActivity : AppCompatActivity() {
                 binding.webView.visibility = View.GONE
                 binding.errorView.visibility = View.VISIBLE
                 binding.progressBar.visibility = View.GONE
+                binding.swipeRefresh.isRefreshing = false
+                cancelLoadTimeoutWatchdog()
             }
         }
 
@@ -178,6 +204,11 @@ class MainActivity : AppCompatActivity() {
         ) {
             // KHÔNG bỏ qua lỗi SSL trong production - bảo mật người dùng
             handler.cancel()
+            binding.webView.visibility = View.GONE
+            binding.errorView.visibility = View.VISIBLE
+            binding.progressBar.visibility = View.GONE
+            binding.swipeRefresh.isRefreshing = false
+            cancelLoadTimeoutWatchdog()
             Toast.makeText(this@MainActivity, "Lỗi chứng chỉ bảo mật, không thể tải trang", Toast.LENGTH_LONG).show()
         }
     }
@@ -248,13 +279,23 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
-    // ── Nút Back: lùi trong lịch sử WebView trước khi thoát app ───
-    override fun onBackPressed() {
-        if (binding.webView.canGoBack()) {
-            binding.webView.goBack()
-        } else {
-            super.onBackPressed()
+    private fun startLoadTimeoutWatchdog() {
+        cancelLoadTimeoutWatchdog()
+        val runnable = Runnable {
+            // Trang vẫn chưa load xong sau LOAD_TIMEOUT_MS -> coi như lỗi mạng, không để app treo
+            binding.webView.stopLoading()
+            binding.webView.visibility = View.GONE
+            binding.errorView.visibility = View.VISIBLE
+            binding.progressBar.visibility = View.GONE
+            binding.swipeRefresh.isRefreshing = false
         }
+        loadTimeoutRunnable = runnable
+        loadTimeoutHandler.postDelayed(runnable, LOAD_TIMEOUT_MS)
+    }
+
+    private fun cancelLoadTimeoutWatchdog() {
+        loadTimeoutRunnable?.let { loadTimeoutHandler.removeCallbacks(it) }
+        loadTimeoutRunnable = null
     }
 
     fun retryLoad() {
@@ -264,6 +305,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        cancelLoadTimeoutWatchdog()
         binding.webView.destroy()
         super.onDestroy()
     }
