@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraPhotoUri: Uri? = null
     private var pendingCameraPermissionRequest: (() -> Unit)? = null
+    private var pendingWebPermissionRequest: PermissionRequest? = null
 
     private val loadTimeoutHandler = Handler(Looper.getMainLooper())
     private var loadTimeoutRunnable: Runnable? = null
@@ -64,14 +65,28 @@ class MainActivity : AppCompatActivity() {
 
     private val cameraPermissionLauncher: ActivityResultLauncher<String> =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
-                pendingCameraPermissionRequest?.invoke()
-            } else {
-                Toast.makeText(this, "Cần quyền camera để chụp ảnh cây trồng", Toast.LENGTH_SHORT).show()
-                filePathCallback?.onReceiveValue(null)
-                filePathCallback = null
+            // Trường hợp 1: đang chờ mở file chooser (input type="file")
+            pendingCameraPermissionRequest?.let { action ->
+                if (granted) {
+                    action.invoke()
+                } else {
+                    Toast.makeText(this, "Cần quyền camera để chụp ảnh cây trồng", Toast.LENGTH_SHORT).show()
+                    filePathCallback?.onReceiveValue(null)
+                    filePathCallback = null
+                }
+                pendingCameraPermissionRequest = null
             }
-            pendingCameraPermissionRequest = null
+
+            // Trường hợp 2: đang chờ getUserMedia() (camera trực tiếp trong trang, dùng MediaStream)
+            pendingWebPermissionRequest?.let { request ->
+                if (granted) {
+                    request.grant(request.resources)
+                } else {
+                    request.deny()
+                    Toast.makeText(this, "Cần cấp quyền Camera để dùng tính năng chụp ảnh", Toast.LENGTH_LONG).show()
+                }
+                pendingWebPermissionRequest = null
+            }
         }
 
     // ── Lifecycle ────────────────────────────────────────────────
@@ -236,6 +251,28 @@ class MainActivity : AppCompatActivity() {
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
             return true
+        }
+
+        // Bắt buộc cho navigator.mediaDevices.getUserMedia() (camera trực tiếp
+        // trong trang web, dùng <video> + canvas, KHÔNG qua <input type="file">).
+        // Nếu thiếu override này, web luôn báo "Không thể truy cập camera".
+        override fun onPermissionRequest(request: PermissionRequest) {
+            val needsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+            val needsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+
+            if (!needsCamera && !needsMic) {
+                request.deny()
+                return
+            }
+
+            runOnUiThread {
+                if (isCameraPermissionGranted()) {
+                    request.grant(request.resources)
+                } else {
+                    pendingWebPermissionRequest = request
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            }
         }
     }
 
