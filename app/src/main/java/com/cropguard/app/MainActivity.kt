@@ -323,18 +323,25 @@ class MainActivity : AppCompatActivity() {
         } else null
 
         // Try a sequence of gallery intents from most specific to most permissive.
-        // Some devices/ROMs (TV boxes, MDM-locked devices) lack a file manager
-        // that resolves EXTRA_MIME_TYPES, so we fall back step by step instead
-        // of failing on the first mismatch.
+        // IMPORTANT: when the web page accepts both PDF and images (the "Teach AI"
+        // tab), we must never fall back to an image-only picker before trying a
+        // picker that also allows PDF - otherwise PDF selection becomes
+        // impossible even though the page explicitly asked for it.
+        val acceptsPdf = acceptTypes.any { it.contains("pdf", ignoreCase = true) }
         val candidateMimeTypes = buildList {
-            if (acceptTypes.any { it.contains("pdf", ignoreCase = true) } &&
-                acceptTypes.any { it == mimeImage }
-            ) {
+            if (acceptsPdf) {
+                // Specific hint first (works on most modern file managers)
                 add(mimeWildcard to acceptTypes.toTypedArray())
+                // Then a fully open picker - still lets the user reach PDFs,
+                // unlike falling back to image/* which would hide them.
+                add(mimeWildcard to null)
+            } else if (wantsImage) {
+                add(mimeImage to null)
+                add(mimeWildcard to null)
+            } else {
+                add(mimeWildcard to null)
             }
-            if (wantsImage) add(mimeImage to null)
-            add(mimeWildcard to null)
-        }.distinctBy { it.first }
+        }.distinctBy { it.first to (it.second?.joinToString() ?: "") }
 
         for ((mimeType, extraMimeTypes) in candidateMimeTypes) {
             try {
