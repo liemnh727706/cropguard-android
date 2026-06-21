@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraPhotoUri: Uri? = null
     private var pendingCameraPermissionRequest: (() -> Unit)? = null
+    private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
     private var pendingWebPermissionRequest: PermissionRequest? = null
 
     private val loadTimeoutHandler = Handler(Looper.getMainLooper())
@@ -41,26 +42,31 @@ class MainActivity : AppCompatActivity() {
             filePathCallback = null
             if (callback == null) return@registerForActivityResult
 
-            if (result.resultCode != RESULT_OK) {
-                callback.onReceiveValue(null)
-                return@registerForActivityResult
-            }
-
-            val data = result.data
-            val resultUris: Array<Uri>? = when {
-                // Người dùng chọn nhiều file từ thư viện
-                data?.clipData != null -> {
-                    val clip = data.clipData!!
-                    Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
+            try {
+                if (result.resultCode != RESULT_OK) {
+                    callback.onReceiveValue(null)
+                    return@registerForActivityResult
                 }
-                // Người dùng chọn 1 file từ thư viện
-                data?.data != null -> arrayOf(data.data!!)
-                // Người dùng vừa chụp ảnh bằng camera (data thường null/rỗng trong trường hợp này)
-                cameraPhotoUri != null -> arrayOf(cameraPhotoUri!!)
-                else -> null
+
+                val data = result.data
+                val resultUris: Array<Uri>? = when {
+                    // Người dùng chọn nhiều file từ thư viện
+                    data?.clipData != null -> {
+                        val clip = data.clipData!!
+                        Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
+                    }
+                    // Người dùng chọn 1 file từ thư viện
+                    data?.data != null -> arrayOf(data.data!!)
+                    // Người dùng vừa chụp ảnh bằng camera (data thường null/rỗng trong trường hợp này)
+                    cameraPhotoUri != null -> arrayOf(cameraPhotoUri!!)
+                    else -> null
+                }
+                callback.onReceiveValue(resultUris)
+            } catch (e: Exception) {
+                callback.onReceiveValue(null)
+            } finally {
+                cameraPhotoUri = null
             }
-            callback.onReceiveValue(resultUris)
-            cameraPhotoUri = null
         }
 
     private val cameraPermissionLauncher: ActivityResultLauncher<String> =
@@ -140,10 +146,14 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
             setSupportZoom(true)
             builtInZoomControls = false
+            displayZoomControls = false
             loadWithOverviewMode = true
             useWideViewPort = true
             userAgentString = "$userAgentString CropGuardAndroidApp/1.0"
         }
+
+        // Hardware layer giúp render <video> (luồng camera) mượt hơn khi pinch-zoom
+        setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         // Cho phép cookie (đăng nhập) tồn tại giữa các session
         CookieManager.getInstance().setAcceptCookie(true)
@@ -243,11 +253,12 @@ class MainActivity : AppCompatActivity() {
             params: FileChooserParams
         ): Boolean {
             filePathCallback = callback
+            pendingFileChooserParams = params
 
             if (isCameraPermissionGranted()) {
-                launchImageChooser()
+                launchImageChooser(params)
             } else {
-                pendingCameraPermissionRequest = { launchImageChooser() }
+                pendingCameraPermissionRequest = { launchImageChooser(pendingFileChooserParams) }
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
             return true
@@ -280,33 +291,65 @@ class MainActivity : AppCompatActivity() {
         packageManager.checkPermission(Manifest.permission.CAMERA, packageName) ==
             PackageManager.PERMISSION_GRANTED
 
-    /** Mở dialog chọn: chụp ảnh mới HOẶC chọn từ thư viện. */
-    private fun launchImageChooser() {
-        // Intent camera
-        val photoFile = createImageFile()
-        val cameraIntent: Intent? = photoFile?.let { file ->
-            cameraPhotoUri = FileProvider.getUriForFile(
-                this, "$packageName.fileprovider", file
-            )
-            Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
-                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    /**
+     * Mở dialog chọn file. Đọc đúng loại file web yêu cầu (params.acceptTypes)
+     * thay vì luôn cố định "image/*" - quan trọng cho tab "Dạy AI" chấp nhận
+     * cả PDF lẫn ảnh (accept=".pdf,image/*").
+     * Toàn bộ bọc try-catch vì ActivityNotFoundException (máy không có app
+     * xử lý MIME type đó) trước đây làm crash toàn bộ app.
+     */
+    private fun launchImageChooser(params: WebChromeClient.FileChooserParams?) {
+        try {
+            // Xác định MIME type thực tế web yêu cầu
+            val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
+            val mimeType = when {
+                acceptTypes.isEmpty() -> "*/*"
+                acceptTypes.size == 1 && acceptTypes[0] == "image/*" -> "image/*"
+                acceptTypes.any { it == "image/*" } &&
+                    acceptTypes.any { it.contains("pdf", ignoreCase = true) } -> "*/*"
+                else -> "*/*"
             }
-        }
+            val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
 
-        // Intent chọn ảnh từ thư viện
-        val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-            type = "image/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-        }
+            // Intent camera - chỉ thêm vào nếu web có chấp nhận ảnh
+            val cameraIntent: Intent? = if (wantsImage) {
+                val photoFile = createImageFile()
+                photoFile?.let { file ->
+                    cameraPhotoUri = FileProvider.getUriForFile(
+                        this, "$packageName.fileprovider", file
+                    )
+                    Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                        putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                }
+            } else null
 
-        val chooserIntent = Intent.createChooser(galleryIntent, "Chọn ảnh cây trồng").apply {
-            if (cameraIntent != null) {
-                putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+            // Intent chọn file từ thư viện/trình quản lý file, đúng MIME type
+            val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = mimeType
+                addCategory(Intent.CATEGORY_OPENABLE)
+                if (mimeType == "*/*" && acceptTypes.isNotEmpty()) {
+                    // Gợi ý cụ thể hơn cho launcher biết các loại MIME được chấp nhận
+                    putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
+                }
             }
-        }
 
-        fileChooserLauncher.launch(chooserIntent)
+            val chooserIntent = Intent.createChooser(galleryIntent, "Chọn file").apply {
+                if (cameraIntent != null) {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                }
+            }
+
+            fileChooserLauncher.launch(chooserIntent)
+        } catch (e: Exception) {
+            // Không để bất kỳ lỗi nào ở bước chọn file làm crash cả app
+            Toast.makeText(this, "Không thể mở trình chọn file", Toast.LENGTH_SHORT).show()
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+        } finally {
+            pendingFileChooserParams = null
+        }
     }
 
     private fun createImageFile(): File? = try {
