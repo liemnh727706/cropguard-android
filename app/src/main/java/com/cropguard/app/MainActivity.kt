@@ -33,9 +33,9 @@ class MainActivity : AppCompatActivity() {
 
     private val loadTimeoutHandler = Handler(Looper.getMainLooper())
     private var loadTimeoutRunnable: Runnable? = null
-    private val LOAD_TIMEOUT_MS = 20_000L  // 20 giây - nếu trang chưa load xong, coi như lỗi mạng
+    private val LOAD_TIMEOUT_MS = 20_000L  // 20 seconds - if page is not loaded yet, treat as network error
 
-    // ── Result launchers ─────────────────────────────────────────
+    // Result launchers
     private val fileChooserLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val callback = filePathCallback
@@ -50,14 +50,14 @@ class MainActivity : AppCompatActivity() {
 
                 val data = result.data
                 val resultUris: Array<Uri>? = when {
-                    // Người dùng chọn nhiều file từ thư viện
+                    // User selected multiple files from the gallery
                     data?.clipData != null -> {
                         val clip = data.clipData!!
                         Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
                     }
-                    // Người dùng chọn 1 file từ thư viện
+                    // User selected a single file from the gallery
                     data?.data != null -> arrayOf(data.data!!)
-                    // Người dùng vừa chụp ảnh bằng camera (data thường null/rỗng trong trường hợp này)
+                    // User just took a photo with the camera (data is usually null in this case)
                     cameraPhotoUri != null -> arrayOf(cameraPhotoUri!!)
                     else -> null
                 }
@@ -71,31 +71,31 @@ class MainActivity : AppCompatActivity() {
 
     private val cameraPermissionLauncher: ActivityResultLauncher<String> =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            // Trường hợp 1: đang chờ mở file chooser (input type="file")
+            // Case 1: waiting to open the file chooser (input type="file")
             pendingCameraPermissionRequest?.let { action ->
                 if (granted) {
                     action.invoke()
                 } else {
-                    Toast.makeText(this, "Cần quyền camera để chụp ảnh cây trồng", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Camera permission is required to take photos", Toast.LENGTH_SHORT).show()
                     filePathCallback?.onReceiveValue(null)
                     filePathCallback = null
                 }
                 pendingCameraPermissionRequest = null
             }
 
-            // Trường hợp 2: đang chờ getUserMedia() (camera trực tiếp trong trang, dùng MediaStream)
+            // Case 2: waiting for getUserMedia() (direct in-page camera, using MediaStream)
             pendingWebPermissionRequest?.let { request ->
                 if (granted) {
                     request.grant(request.resources)
                 } else {
                     request.deny()
-                    Toast.makeText(this, "Cần cấp quyền Camera để dùng tính năng chụp ảnh", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Camera permission is required for this feature", Toast.LENGTH_LONG).show()
                 }
                 pendingWebPermissionRequest = null
             }
         }
 
-    // ── Lifecycle ────────────────────────────────────────────────
+    // Lifecycle
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -152,10 +152,10 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString CropGuardAndroidApp/1.0"
         }
 
-        // Hardware layer giúp render <video> (luồng camera) mượt hơn khi pinch-zoom
+        // Hardware layer helps render <video> (camera stream) more smoothly during pinch-zoom
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
-        // Cho phép cookie (đăng nhập) tồn tại giữa các session
+        // Allow cookies (login session) to persist between app sessions
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
@@ -163,7 +163,7 @@ class MainActivity : AppCompatActivity() {
         webChromeClient = CropGuardWebChromeClient()
     }
 
-    // ── WebViewClient: điều hướng + lỗi mạng + SSL ─────────────────
+    // WebViewClient: navigation + network errors + SSL
     private inner class CropGuardWebViewClient : WebViewClient() {
 
         override fun shouldOverrideUrlLoading(
@@ -174,16 +174,16 @@ class MainActivity : AppCompatActivity() {
             val host = uri.host ?: return false
 
             return when {
-                // Domain chính -> load trong WebView
+                // Main domain -> load inside the WebView
                 Config.ALLOWED_HOSTS.any { host.endsWith(it) } -> false
 
-                // Link mailto/tel -> mở app tương ứng
+                // mailto/tel links -> open the relevant app
                 uri.scheme == "mailto" || uri.scheme == "tel" -> {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
                     true
                 }
 
-                // OAuth, link ngoài -> mở Chrome thật
+                // OAuth, external links -> open in real Chrome
                 else -> {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
                     true
@@ -212,7 +212,8 @@ class MainActivity : AppCompatActivity() {
             error: WebResourceError
         ) {
             super.onReceivedError(view, request, error)
-            // Chỉ hiện màn hình lỗi nếu lỗi xảy ra ở trang chính (không phải resource phụ như ảnh/script)
+            // Only show the error screen if the error happened on the main frame
+            // (not on a sub-resource like an image or script)
             if (request.isForMainFrame) {
                 binding.webView.visibility = View.GONE
                 binding.errorView.visibility = View.VISIBLE
@@ -227,18 +228,18 @@ class MainActivity : AppCompatActivity() {
             handler: SslErrorHandler,
             error: SslError
         ) {
-            // KHÔNG bỏ qua lỗi SSL trong production - bảo mật người dùng
+            // Never bypass SSL errors in production - protects user security
             handler.cancel()
             binding.webView.visibility = View.GONE
             binding.errorView.visibility = View.VISIBLE
             binding.progressBar.visibility = View.GONE
             binding.swipeRefresh.isRefreshing = false
             cancelLoadTimeoutWatchdog()
-            Toast.makeText(this@MainActivity, "Lỗi chứng chỉ bảo mật, không thể tải trang", Toast.LENGTH_LONG).show()
+            Toast.makeText(this@MainActivity, "Security certificate error, cannot load page", Toast.LENGTH_LONG).show()
         }
     }
 
-    // ── WebChromeClient: progress bar + file chooser (camera/gallery) ─
+    // WebChromeClient: progress bar + file chooser (camera/gallery)
     private inner class CropGuardWebChromeClient : WebChromeClient() {
 
         override fun onProgressChanged(view: WebView, newProgress: Int) {
@@ -264,9 +265,9 @@ class MainActivity : AppCompatActivity() {
             return true
         }
 
-        // Bắt buộc cho navigator.mediaDevices.getUserMedia() (camera trực tiếp
-        // trong trang web, dùng <video> + canvas, KHÔNG qua <input type="file">).
-        // Nếu thiếu override này, web luôn báo "Không thể truy cập camera".
+        // Required for navigator.mediaDevices.getUserMedia() (direct in-page camera,
+        // using <video> + canvas, NOT through <input type="file">).
+        // Without this override, the web page always reports "Cannot access camera".
         override fun onPermissionRequest(request: PermissionRequest) {
             val needsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
             val needsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
@@ -292,15 +293,16 @@ class MainActivity : AppCompatActivity() {
             PackageManager.PERMISSION_GRANTED
 
     /**
-     * Mở dialog chọn file. Đọc đúng loại file web yêu cầu (params.acceptTypes)
-     * thay vì luôn cố định "image/*" - quan trọng cho tab "Dạy AI" chấp nhận
-     * cả PDF lẫn ảnh (accept=".pdf,image/*").
-     * Toàn bộ bọc try-catch vì ActivityNotFoundException (máy không có app
-     * xử lý MIME type đó) trước đây làm crash toàn bộ app.
+     * Opens the file chooser dialog. Reads the actual file type the web page
+     * requested (params.acceptTypes) instead of always hardcoding "image/*" -
+     * important for the "Teach AI" tab which accepts both PDF and images
+     * (accept=".pdf,image/*").
+     * Entire body wrapped in try-catch because ActivityNotFoundException
+     * (device has no app to handle that MIME type) used to crash the whole app.
      */
     private fun launchImageChooser(params: WebChromeClient.FileChooserParams?) {
         try {
-            // Xác định MIME type thực tế web yêu cầu
+            // Determine the actual MIME type the web page requested
             val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
             val mimeType = when {
                 acceptTypes.isEmpty() -> "*/*"
@@ -311,7 +313,7 @@ class MainActivity : AppCompatActivity() {
             }
             val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
 
-            // Intent camera - chỉ thêm vào nếu web có chấp nhận ảnh
+            // Camera intent - only added if the web page accepts images
             val cameraIntent: Intent? = if (wantsImage) {
                 val photoFile = createImageFile()
                 photoFile?.let { file ->
@@ -325,17 +327,17 @@ class MainActivity : AppCompatActivity() {
                 }
             } else null
 
-            // Intent chọn file từ thư viện/trình quản lý file, đúng MIME type
+            // Intent to pick a file from the gallery/file manager, with the correct MIME type
             val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                 type = mimeType
                 addCategory(Intent.CATEGORY_OPENABLE)
                 if (mimeType == "*/*" && acceptTypes.isNotEmpty()) {
-                    // Gợi ý cụ thể hơn cho launcher biết các loại MIME được chấp nhận
+                    // Give the launcher a more specific hint about accepted MIME types
                     putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
                 }
             }
 
-            val chooserIntent = Intent.createChooser(galleryIntent, "Chọn file").apply {
+            val chooserIntent = Intent.createChooser(galleryIntent, "Choose file").apply {
                 if (cameraIntent != null) {
                     putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
                 }
@@ -343,8 +345,8 @@ class MainActivity : AppCompatActivity() {
 
             fileChooserLauncher.launch(chooserIntent)
         } catch (e: Exception) {
-            // Không để bất kỳ lỗi nào ở bước chọn file làm crash cả app
-            Toast.makeText(this, "Không thể mở trình chọn file", Toast.LENGTH_SHORT).show()
+            // Never let an error in the file chooser step crash the whole app
+            Toast.makeText(this, "Could not open file chooser", Toast.LENGTH_SHORT).show()
             filePathCallback?.onReceiveValue(null)
             filePathCallback = null
         } finally {
@@ -362,7 +364,8 @@ class MainActivity : AppCompatActivity() {
     private fun startLoadTimeoutWatchdog() {
         cancelLoadTimeoutWatchdog()
         val runnable = Runnable {
-            // Trang vẫn chưa load xong sau LOAD_TIMEOUT_MS -> coi như lỗi mạng, không để app treo
+            // Page still hasn't finished loading after LOAD_TIMEOUT_MS -> treat as
+            // a network error, do not let the app hang
             binding.webView.stopLoading()
             binding.webView.visibility = View.GONE
             binding.errorView.visibility = View.VISIBLE
