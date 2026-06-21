@@ -295,25 +295,18 @@ class MainActivity : AppCompatActivity() {
     // Opens the file chooser dialog. Reads the actual file type the web page
     // requested (params.acceptTypes) instead of always hardcoding "image" type -
     // important for the "Teach AI" tab which accepts both PDF and images.
-    // Entire body wrapped in try-catch because ActivityNotFoundException
-    // (device has no app to handle that MIME type) used to crash the whole app.
+    // Tries multiple MIME type fallbacks (specific -> image -> any file) so
+    // devices missing a full file manager still find something that works,
+    // instead of crashing or failing outright on ActivityNotFoundException.
     private fun launchImageChooser(params: WebChromeClient.FileChooserParams?) {
-        try {
-            // Determine the actual MIME type the web page requested
-            val mimeWildcard = "*" + "/" + "*"
-            val mimeImage = "image" + "/" + "*"
-            val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
-            val mimeType = when {
-                acceptTypes.isEmpty() -> mimeWildcard
-                acceptTypes.size == 1 && acceptTypes[0] == mimeImage -> mimeImage
-                acceptTypes.any { it == mimeImage } &&
-                    acceptTypes.any { it.contains("pdf", ignoreCase = true) } -> mimeWildcard
-                else -> mimeWildcard
-            }
-            val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
+        val mimeWildcard = "*" + "/" + "*"
+        val mimeImage = "image" + "/" + "*"
+        val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
+        val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
 
-            // Camera intent - only added if the web page accepts images
-            val cameraIntent: Intent? = if (wantsImage) {
+        // Camera intent - only added if the web page accepts images
+        val cameraIntent: Intent? = if (wantsImage) {
+            try {
                 val photoFile = createImageFile()
                 photoFile?.let { file ->
                     cameraPhotoUri = FileProvider.getUriForFile(
@@ -324,33 +317,55 @@ class MainActivity : AppCompatActivity() {
                         addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     }
                 }
-            } else null
-
-            // Intent to pick a file from the gallery/file manager, with the correct MIME type
-            val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                type = mimeType
-                addCategory(Intent.CATEGORY_OPENABLE)
-                if (mimeType == mimeWildcard && acceptTypes.isNotEmpty()) {
-                    // Give the launcher a more specific hint about accepted MIME types
-                    putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
-                }
+            } catch (e: Exception) {
+                null
             }
+        } else null
 
-            val chooserIntent = Intent.createChooser(galleryIntent, "Choose file").apply {
-                if (cameraIntent != null) {
-                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
-                }
+        // Try a sequence of gallery intents from most specific to most permissive.
+        // Some devices/ROMs (TV boxes, MDM-locked devices) lack a file manager
+        // that resolves EXTRA_MIME_TYPES, so we fall back step by step instead
+        // of failing on the first mismatch.
+        val candidateMimeTypes = buildList {
+            if (acceptTypes.any { it.contains("pdf", ignoreCase = true) } &&
+                acceptTypes.any { it == mimeImage }
+            ) {
+                add(mimeWildcard to acceptTypes.toTypedArray())
             }
+            if (wantsImage) add(mimeImage to null)
+            add(mimeWildcard to null)
+        }.distinctBy { it.first }
 
-            fileChooserLauncher.launch(chooserIntent)
-        } catch (e: Exception) {
-            // Never let an error in the file chooser step crash the whole app
-            Toast.makeText(this, "Could not open file chooser", Toast.LENGTH_SHORT).show()
-            filePathCallback?.onReceiveValue(null)
-            filePathCallback = null
-        } finally {
-            pendingFileChooserParams = null
+        for ((mimeType, extraMimeTypes) in candidateMimeTypes) {
+            try {
+                val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                    type = mimeType
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    if (extraMimeTypes != null) {
+                        putExtra(Intent.EXTRA_MIME_TYPES, extraMimeTypes)
+                    }
+                }
+
+                val chooserIntent = Intent.createChooser(galleryIntent, "Choose file").apply {
+                    if (cameraIntent != null) {
+                        putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                    }
+                }
+
+                fileChooserLauncher.launch(chooserIntent)
+                pendingFileChooserParams = null
+                return
+            } catch (e: Exception) {
+                // This MIME type combo couldn't be resolved on this device,
+                // try the next, more permissive option.
+            }
         }
+
+        // Every fallback failed - no app on this device can handle file picking
+        Toast.makeText(this, "No file picker app found on this device", Toast.LENGTH_LONG).show()
+        filePathCallback?.onReceiveValue(null)
+        filePathCallback = null
+        pendingFileChooserParams = null
     }
 
     private fun createImageFile(): File? = try {
