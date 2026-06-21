@@ -292,24 +292,23 @@ class MainActivity : AppCompatActivity() {
         packageManager.checkPermission(Manifest.permission.CAMERA, packageName) ==
             PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Opens the file chooser dialog. Reads the actual file type the web page
-     * requested (params.acceptTypes) instead of always hardcoding "image/*" -
-     * important for the "Teach AI" tab which accepts both PDF and images
-     * (accept=".pdf,image/*").
-     * Entire body wrapped in try-catch because ActivityNotFoundException
-     * (device has no app to handle that MIME type) used to crash the whole app.
-     */
+    // Opens the file chooser dialog. Reads the actual file type the web page
+    // requested (params.acceptTypes) instead of always hardcoding "image" type -
+    // important for the "Teach AI" tab which accepts both PDF and images.
+    // Entire body wrapped in try-catch because ActivityNotFoundException
+    // (device has no app to handle that MIME type) used to crash the whole app.
     private fun launchImageChooser(params: WebChromeClient.FileChooserParams?) {
         try {
             // Determine the actual MIME type the web page requested
+            val mimeWildcard = "*" + "/" + "*"
+            val mimeImage = "image" + "/" + "*"
             val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
             val mimeType = when {
-                acceptTypes.isEmpty() -> "*/*"
-                acceptTypes.size == 1 && acceptTypes[0] == "image/*" -> "image/*"
-                acceptTypes.any { it == "image/*" } &&
-                    acceptTypes.any { it.contains("pdf", ignoreCase = true) } -> "*/*"
-                else -> "*/*"
+                acceptTypes.isEmpty() -> mimeWildcard
+                acceptTypes.size == 1 && acceptTypes[0] == mimeImage -> mimeImage
+                acceptTypes.any { it == mimeImage } &&
+                    acceptTypes.any { it.contains("pdf", ignoreCase = true) } -> mimeWildcard
+                else -> mimeWildcard
             }
             val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
 
@@ -331,7 +330,7 @@ class MainActivity : AppCompatActivity() {
             val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                 type = mimeType
                 addCategory(Intent.CATEGORY_OPENABLE)
-                if (mimeType == "*/*" && acceptTypes.isNotEmpty()) {
+                if (mimeType == mimeWildcard && acceptTypes.isNotEmpty()) {
                     // Give the launcher a more specific hint about accepted MIME types
                     putExtra(Intent.EXTRA_MIME_TYPES, acceptTypes.toTypedArray())
                 }
