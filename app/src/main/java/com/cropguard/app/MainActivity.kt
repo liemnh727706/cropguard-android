@@ -327,14 +327,30 @@ class MainActivity : AppCompatActivity() {
         // tab), we must never fall back to an image-only picker before trying a
         // picker that also allows PDF - otherwise PDF selection becomes
         // impossible even though the page explicitly asked for it.
+        //
+        // Note: params.acceptTypes can contain raw HTML accept values like
+        // ".pdf" (a file extension) rather than a proper MIME type. Android's
+        // DocumentsUI only understands real MIME types in EXTRA_MIME_TYPES
+        // (e.g. "application/pdf"), so passing ".pdf" through unmodified makes
+        // it silently filter out all PDF files instead of showing them.
         val acceptsPdf = acceptTypes.any { it.contains("pdf", ignoreCase = true) }
+        val normalizedMimeTypes = acceptTypes.mapNotNull { raw ->
+            when {
+                raw.contains("/") -> raw
+                raw.contains("pdf", ignoreCase = true) -> "application" + "/" + "pdf"
+                else -> null
+            }
+        }.distinct()
+
         val candidateMimeTypes = buildList {
             if (acceptsPdf) {
-                // Specific hint first (works on most modern file managers)
-                add(mimeWildcard to acceptTypes.toTypedArray())
-                // Then a fully open picker - still lets the user reach PDFs,
-                // unlike falling back to image/* which would hide them.
+                // An unfiltered picker reliably shows every file type, PDFs
+                // included. Try this first since EXTRA_MIME_TYPES support
+                // varies a lot across device file manager implementations.
                 add(mimeWildcard to null)
+                if (normalizedMimeTypes.isNotEmpty()) {
+                    add(mimeWildcard to normalizedMimeTypes.toTypedArray())
+                }
             } else if (wantsImage) {
                 add(mimeImage to null)
                 add(mimeWildcard to null)
