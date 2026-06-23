@@ -1,15 +1,22 @@
 package com.cropguard.app
 
 object Config {
-    // URL chính của CropGuard
+    // URL chinh cua CropGuard
     const val BASE_URL = "https://cropnlu.duckdns.org"
 
-    // Domain được phép load trong WebView (chặn điều hướng ra ngoài app)
+    // API endpoint kiem tra phien ban knowledge base
+    const val VERSION_URL = "https://cropnlu.duckdns.org/api/knowledge/version"
+
+    // SharedPreferences key luu so entries lan mo truoc
+    const val PREF_NAME = "cropguard_prefs"
+    const val PREF_LAST_COUNT = "last_known_count"
+
+    // Domain duoc phep load trong WebView
     val ALLOWED_HOSTS = setOf(
         "cropnlu.duckdns.org"
     )
 
-    // Domain ngoại lệ mở bằng browser thật (OAuth Google login, thanh toán, v.v.)
+    // Domain ngoai le mo bang browser that (OAuth Google login, v.v.)
     val EXTERNAL_HOSTS = setOf(
         "accounts.google.com",
         "github.com"

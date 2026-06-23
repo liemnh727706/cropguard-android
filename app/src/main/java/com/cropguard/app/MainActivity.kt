@@ -2,6 +2,7 @@ package com.cropguard.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -20,7 +21,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import com.cropguard.app.databinding.ActivityMainBinding
+import com.google.android.material.snackbar.Snackbar
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
@@ -110,6 +118,7 @@ class MainActivity : AppCompatActivity() {
 
         if (savedInstanceState == null) {
             binding.webView.loadUrl(Config.BASE_URL)
+            checkKnowledgeUpdate()
         }
     }
 
@@ -416,6 +425,41 @@ class MainActivity : AppCompatActivity() {
     private fun cancelLoadTimeoutWatchdog() {
         loadTimeoutRunnable?.let { loadTimeoutHandler.removeCallbacks(it) }
         loadTimeoutRunnable = null
+    }
+
+    // Check if knowledge base has grown since last app open.
+    // Runs on a background thread, shows a small Snackbar if new entries exist.
+    // Does nothing if the server is unreachable (silent fail).
+    private fun checkKnowledgeUpdate() {
+        val prefs = getSharedPreferences(Config.PREF_NAME, Context.MODE_PRIVATE)
+        val lastCount = prefs.getInt(Config.PREF_LAST_COUNT, 0)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val conn = URL(Config.VERSION_URL).openConnection().apply {
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+                val json = JSONObject(conn.getInputStream().bufferedReader().readText())
+                val newCount = json.getInt("count")
+
+                // Save latest count for next time
+                prefs.edit().putInt(Config.PREF_LAST_COUNT, newCount).apply()
+
+                val added = newCount - lastCount
+                if (lastCount > 0 && added > 0) {
+                    withContext(Dispatchers.Main) {
+                        Snackbar.make(
+                            binding.root,
+                            "Neu: +$added kien thuc sau benh moi (tong: $newCount)",
+                            Snackbar.LENGTH_LONG
+                        ).setAction("OK") {}.show()
+                    }
+                }
+            } catch (e: Exception) {
+                // Silent fail - do not bother the user if server is unreachable
+            }
+        }
     }
 
     fun retryLoad() {
