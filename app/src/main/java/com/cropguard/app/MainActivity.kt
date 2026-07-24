@@ -1,4 +1,4 @@
-package com.cropguard.app
+﻿package com.cropguard.app
 
 import android.Manifest
 import android.app.Activity
@@ -33,13 +33,13 @@ import java.util.*
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private lateinit var swipeRefreshLayout: SwipeRefreshLayout
+    private lateinit var swipeRefresh: SwipeRefreshLayout
     private lateinit var progressBar: ProgressBar
-    private lateinit var errorLayout: LinearLayout
+    private lateinit var errorView: LinearLayout
 
-    // ═══ Camera / Gallery state ═══
-    private var cameraCallback: String? = null      // tên JS callback function
-    private var currentPhotoPath: String = ""       // đường dẫn file ảnh tạm
+    // â•â•â• Camera / Gallery state â•â•â•
+    private var cameraCallback: String? = null      // tÃªn JS callback function
+    private var currentPhotoPath: String = ""       // Ä‘Æ°á»ng dáº«n file áº£nh táº¡m
     private var photoUri: Uri? = null               // URI FileProvider
 
     // WebChromeClient file chooser callback
@@ -52,14 +52,14 @@ class MainActivity : AppCompatActivity() {
         private const val REQUEST_FILE_CHOOSER = 202
     }
 
-    // ═══ Activity Result launchers ═══
+    // â•â•â• Activity Result launchers â•â•â•
     private val cameraLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             handleCameraResult()
         } else {
-            // User hủy - gọi callback với null
+            // User há»§y - gá»i callback vá»›i null
             cameraCallback?.let { cb ->
                 webView.post {
                     webView.evaluateJavascript("if(window['$cb'])window['$cb'](null)", null)
@@ -105,20 +105,20 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         webView = findViewById(R.id.webView)
-        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
+        swipeRefresh = findViewById(R.id.swipeRefresh)
         progressBar = findViewById(R.id.progressBar)
-        errorLayout = findViewById(R.id.errorLayout)
+        errorView = findViewById(R.id.errorView)
 
         setupWebView()
         setupSwipeRefresh()
-        setupErrorLayout()
+        setupErrorView()
 
         webView.loadUrl(Config.BASE_URL)
     }
 
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // WEBVIEW SETUP
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     private fun setupWebView() {
         val settings = webView.settings
         settings.javaScriptEnabled = true
@@ -135,7 +135,7 @@ class MainActivity : AppCompatActivity() {
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         settings.userAgentString = settings.userAgentString + " CropGuardApp/1.0"
 
-        // ═══ JAVASCRIPT BRIDGE - Native Camera ═══
+        // â•â•â• JAVASCRIPT BRIDGE - Native Camera â•â•â•
         webView.addJavascriptInterface(CropGuardBridge(), "CropGuardNative")
 
         webView.webViewClient = object : WebViewClient() {
@@ -151,12 +151,12 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 progressBar.visibility = View.VISIBLE
-                errorLayout.visibility = View.GONE
+                errorView.visibility = View.GONE
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 progressBar.visibility = View.GONE
-                swipeRefreshLayout.isRefreshing = false
+                swipeRefresh.isRefreshing = false
 
                 // Inject bridge helper vao web
                 injectBridgeHelper()
@@ -167,8 +167,8 @@ class MainActivity : AppCompatActivity() {
             ) {
                 if (request.isForMainFrame) {
                     progressBar.visibility = View.GONE
-                    errorLayout.visibility = View.VISIBLE
-                    swipeRefreshLayout.isRefreshing = false
+                    errorView.visibility = View.VISIBLE
+                    swipeRefresh.isRefreshing = false
                 }
             }
 
@@ -216,11 +216,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // JAVASCRIPT BRIDGE CLASS
     // Web goi: CropGuardNative.openCamera('callbackName')
     //          CropGuardNative.openGallery('callbackName')
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     inner class CropGuardBridge {
 
         @JavascriptInterface
@@ -257,9 +257,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // CAMERA LOGIC
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     private fun checkCameraPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
             this, Manifest.permission.CAMERA
@@ -401,8 +401,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCameraGalleryDialog() {
         val dialog = android.app.AlertDialog.Builder(this)
-            .setTitle("Chọn nguồn ảnh")
-            .setItems(arrayOf("📷 Chụp ảnh", "🖼️ Chọn từ thư viện")) { _, which ->
+            .setTitle("Chá»n nguá»“n áº£nh")
+            .setItems(arrayOf("ðŸ“· Chá»¥p áº£nh", "ðŸ–¼ï¸ Chá»n tá»« thÆ° viá»‡n")) { _, which ->
                 when (which) {
                     0 -> if (checkCameraPermission()) launchCamera() else requestCameraPermission()
                     1 -> {
@@ -411,7 +411,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            .setNegativeButton("Hủy") { _, _ ->
+            .setNegativeButton("Há»§y") { _, _ ->
                 cameraCallback?.let { cb ->
                     webView.post {
                         webView.evaluateJavascript("if(window['$cb'])window['$cb'](null)", null)
@@ -423,9 +423,9 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // INJECT BRIDGE HELPER - Them ham tien ich vao web
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     private fun injectBridgeHelper() {
         val js = """
             (function() {
@@ -468,20 +468,20 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // UI HELPERS
-    // ═══════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     private fun setupSwipeRefresh() {
-        swipeRefreshLayout.setColorSchemeResources(R.color.primary_green)
-        swipeRefreshLayout.setOnRefreshListener {
+        swipeRefresh.setColorSchemeResources(R.color.cropguard_green)
+        swipeRefresh.setOnRefreshListener {
             webView.reload()
         }
     }
 
-    private fun setupErrorLayout() {
-        val retryButton = errorLayout.findViewById<Button>(R.id.retryButton)
-        retryButton?.setOnClickListener {
-            errorLayout.visibility = View.GONE
+    private fun setupErrorView() {
+        val btnRetry = errorView.findViewById<Button>(R.id.btnRetry)
+        btnRetry?.setOnClickListener {
+            errorView.visibility = View.GONE
             webView.reload()
         }
     }
@@ -504,3 +504,5 @@ class MainActivity : AppCompatActivity() {
         webView.onResume()
     }
 }
+
+
