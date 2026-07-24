@@ -1,476 +1,506 @@
 package com.cropguard.app
 
 import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Context
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
+import android.util.Base64
 import android.view.View
 import android.webkit.*
-import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.result.ActivityResultLauncher
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.cropguard.app.databinding.ActivityMainBinding
-import com.google.android.material.snackbar.Snackbar
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityMainBinding
+    private lateinit var webView: WebView
+    private lateinit var swipeRefreshLayout: SwipeRefreshLayout
+    private lateinit var progressBar: ProgressBar
+    private lateinit var errorLayout: LinearLayout
+
+    // ═══ Camera / Gallery state ═══
+    private var cameraCallback: String? = null      // tên JS callback function
+    private var currentPhotoPath: String = ""       // đường dẫn file ảnh tạm
+    private var photoUri: Uri? = null               // URI FileProvider
+
+    // WebChromeClient file chooser callback
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
-    private var cameraPhotoUri: Uri? = null
-    private var pendingCameraPermissionRequest: (() -> Unit)? = null
-    private var pendingFileChooserParams: WebChromeClient.FileChooserParams? = null
-    private var pendingWebPermissionRequest: PermissionRequest? = null
 
-    private val loadTimeoutHandler = Handler(Looper.getMainLooper())
-    private var loadTimeoutRunnable: Runnable? = null
-    private val LOAD_TIMEOUT_MS = 20_000L  // 20 seconds - if page is not loaded yet, treat as network error
+    companion object {
+        private const val REQUEST_CAMERA_PERMISSION = 100
+        private const val REQUEST_CAMERA = 200
+        private const val REQUEST_GALLERY = 201
+        private const val REQUEST_FILE_CHOOSER = 202
+    }
 
-    // Result launchers
-    private val fileChooserLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val callback = filePathCallback
-            filePathCallback = null
-            if (callback == null) return@registerForActivityResult
-
-            try {
-                if (result.resultCode != RESULT_OK) {
-                    callback.onReceiveValue(null)
-                    return@registerForActivityResult
+    // ═══ Activity Result launchers ═══
+    private val cameraLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            handleCameraResult()
+        } else {
+            // User hủy - gọi callback với null
+            cameraCallback?.let { cb ->
+                webView.post {
+                    webView.evaluateJavascript("if(window['$cb'])window['$cb'](null)", null)
                 }
-
-                val data = result.data
-                val resultUris: Array<Uri>? = when {
-                    // User selected multiple files from the gallery
-                    data?.clipData != null -> {
-                        val clip = data.clipData!!
-                        Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
-                    }
-                    // User selected a single file from the gallery
-                    data?.data != null -> arrayOf(data.data!!)
-                    // User just took a photo with the camera (data is usually null in this case)
-                    cameraPhotoUri != null -> arrayOf(cameraPhotoUri!!)
-                    else -> null
-                }
-                callback.onReceiveValue(resultUris)
-            } catch (e: Exception) {
-                callback.onReceiveValue(null)
-            } finally {
-                cameraPhotoUri = null
             }
+            cameraCallback = null
         }
+    }
 
-    private val cameraPermissionLauncher: ActivityResultLauncher<String> =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            // Case 1: waiting to open the file chooser (input type="file")
-            pendingCameraPermissionRequest?.let { action ->
-                if (granted) {
-                    action.invoke()
-                } else {
-                    Toast.makeText(this, "Camera permission is required to take photos", Toast.LENGTH_SHORT).show()
-                    filePathCallback?.onReceiveValue(null)
-                    filePathCallback = null
-                }
-                pendingCameraPermissionRequest = null
+    private val galleryLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { uri ->
+                handleGalleryResult(uri)
             }
-
-            // Case 2: waiting for getUserMedia() (direct in-page camera, using MediaStream)
-            pendingWebPermissionRequest?.let { request ->
-                if (granted) {
-                    request.grant(request.resources)
-                } else {
-                    request.deny()
-                    Toast.makeText(this, "Camera permission is required for this feature", Toast.LENGTH_LONG).show()
+        } else {
+            cameraCallback?.let { cb ->
+                webView.post {
+                    webView.evaluateJavascript("if(window['$cb'])window['$cb'](null)", null)
                 }
-                pendingWebPermissionRequest = null
             }
+            cameraCallback = null
         }
+    }
 
-    // Lifecycle
-    @SuppressLint("SetJavaScriptEnabled")
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uris = WebChromeClient.FileChooserParams.parseResult(
+                result.resultCode, result.data
+            )
+            filePathCallback?.onReceiveValue(uris)
+        } else {
+            filePathCallback?.onReceiveValue(null)
+        }
+        filePathCallback = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
+
+        webView = findViewById(R.id.webView)
+        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
+        progressBar = findViewById(R.id.progressBar)
+        errorLayout = findViewById(R.id.errorLayout)
 
         setupWebView()
         setupSwipeRefresh()
-        setupBackPressHandler()
+        setupErrorLayout()
 
-        binding.btnRetry.setOnClickListener { retryLoad() }
-
-        if (savedInstanceState == null) {
-            binding.webView.loadUrl(Config.BASE_URL)
-            checkKnowledgeUpdate()
-        }
+        webView.loadUrl(Config.BASE_URL)
     }
 
-    private fun setupBackPressHandler() {
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (binding.webView.canGoBack()) {
-                    binding.webView.goBack()
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+    // ═══════════════════════════════════════════════════════
+    // WEBVIEW SETUP
+    // ═══════════════════════════════════════════════════════
+    private fun setupWebView() {
+        val settings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.allowFileAccess = true
+        settings.allowContentAccess = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = false
+        settings.displayZoomControls = false
+        settings.loadWithOverviewMode = true
+        settings.useWideViewPort = true
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.userAgentString = settings.userAgentString + " CropGuardApp/1.0"
+
+        // ═══ JAVASCRIPT BRIDGE - Native Camera ═══
+        webView.addJavascriptInterface(CropGuardBridge(), "CropGuardNative")
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val url = request.url.toString()
+                // Link ngoai domain -> mo Chrome
+                if (Config.ALLOWED_HOSTS.none { url.contains(it) }) {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    return true
+                }
+                return false
+            }
+
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                progressBar.visibility = View.VISIBLE
+                errorLayout.visibility = View.GONE
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                progressBar.visibility = View.GONE
+                swipeRefreshLayout.isRefreshing = false
+
+                // Inject bridge helper vao web
+                injectBridgeHelper()
+            }
+
+            override fun onReceivedError(
+                view: WebView, request: WebResourceRequest, error: WebResourceError
+            ) {
+                if (request.isForMainFrame) {
+                    progressBar.visibility = View.GONE
+                    errorLayout.visibility = View.VISIBLE
+                    swipeRefreshLayout.isRefreshing = false
                 }
             }
-        })
+
+            override fun onReceivedSslError(
+                view: WebView, handler: SslErrorHandler, error: SslError
+            ) {
+                handler.cancel() // Khong bo qua loi SSL
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                progressBar.progress = newProgress
+            }
+
+            // Ho tro input type="file" thong thuong
+            override fun onShowFileChooser(
+                view: WebView,
+                filePath: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = filePath
+
+                val intent = fileChooserParams.createIntent()
+                try {
+                    fileChooserLauncher.launch(intent)
+                } catch (e: Exception) {
+                    filePathCallback = null
+                    return false
+                }
+                return true
+            }
+
+            // Permission cho camera trong WebRTC
+            override fun onPermissionRequest(request: PermissionRequest) {
+                request.grant(request.resources)
+            }
+        }
+
+        // Cookie
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+        }
     }
 
-    private fun setupSwipeRefresh() {
-        binding.swipeRefresh.setOnRefreshListener {
-            binding.webView.reload()
+    // ═══════════════════════════════════════════════════════
+    // JAVASCRIPT BRIDGE CLASS
+    // Web goi: CropGuardNative.openCamera('callbackName')
+    //          CropGuardNative.openGallery('callbackName')
+    // ═══════════════════════════════════════════════════════
+    inner class CropGuardBridge {
+
+        @JavascriptInterface
+        fun openCamera(callbackName: String) {
+            cameraCallback = callbackName
+            if (checkCameraPermission()) {
+                launchCamera()
+            } else {
+                requestCameraPermission()
+            }
         }
-        binding.swipeRefresh.setColorSchemeResources(
-            android.R.color.holo_green_dark
+
+        @JavascriptInterface
+        fun openGallery(callbackName: String) {
+            cameraCallback = callbackName
+            val intent = Intent(Intent.ACTION_PICK).apply {
+                type = "image/*"
+            }
+            galleryLauncher.launch(intent)
+        }
+
+        @JavascriptInterface
+        fun openCameraOrGallery(callbackName: String) {
+            // Hien dialog chon Camera hoac Gallery
+            cameraCallback = callbackName
+            runOnUiThread {
+                showCameraGalleryDialog()
+            }
+        }
+
+        @JavascriptInterface
+        fun getDeviceInfo(): String {
+            return """{"platform":"android","model":"${Build.MODEL}","version":${Build.VERSION.SDK_INT}}"""
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // CAMERA LOGIC
+    // ═══════════════════════════════════════════════════════
+    private fun checkCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestCameraPermission() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.CAMERA),
+            REQUEST_CAMERA_PERMISSION
         )
     }
 
-    private fun setupWebView() = with(binding.webView) {
-        settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            allowFileAccess = true
-            mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            cacheMode = WebSettings.LOAD_DEFAULT
-            setSupportZoom(true)
-            builtInZoomControls = false
-            displayZoomControls = false
-            loadWithOverviewMode = true
-            useWideViewPort = true
-            userAgentString = "$userAgentString CropGuardAndroidApp/1.0"
-        }
-
-        // Hardware layer helps render <video> (camera stream) more smoothly during pinch-zoom
-        setLayerType(View.LAYER_TYPE_HARDWARE, null)
-
-        // Allow cookies (login session) to persist between app sessions
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-
-        webViewClient = CropGuardWebViewClient()
-        webChromeClient = CropGuardWebChromeClient()
-    }
-
-    // WebViewClient: navigation + network errors + SSL
-    private inner class CropGuardWebViewClient : WebViewClient() {
-
-        override fun shouldOverrideUrlLoading(
-            view: WebView,
-            request: WebResourceRequest
-        ): Boolean {
-            val uri = request.url
-            val host = uri.host ?: return false
-
-            return when {
-                // Main domain -> load inside the WebView
-                Config.ALLOWED_HOSTS.any { host.endsWith(it) } -> false
-
-                // mailto/tel links -> open the relevant app
-                uri.scheme == "mailto" || uri.scheme == "tel" -> {
-                    startActivity(Intent(Intent.ACTION_VIEW, uri))
-                    true
-                }
-
-                // OAuth, external links -> open in real Chrome
-                else -> {
-                    startActivity(Intent(Intent.ACTION_VIEW, uri))
-                    true
-                }
-            }
-        }
-
-        override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-            super.onPageStarted(view, url, favicon)
-            binding.progressBar.visibility = View.VISIBLE
-            binding.errorView.visibility = View.GONE
-            binding.webView.visibility = View.VISIBLE
-            startLoadTimeoutWatchdog()
-        }
-
-        override fun onPageFinished(view: WebView, url: String?) {
-            super.onPageFinished(view, url)
-            binding.progressBar.visibility = View.GONE
-            binding.swipeRefresh.isRefreshing = false
-            cancelLoadTimeoutWatchdog()
-        }
-
-        override fun onReceivedError(
-            view: WebView,
-            request: WebResourceRequest,
-            error: WebResourceError
-        ) {
-            super.onReceivedError(view, request, error)
-            // Only show the error screen if the error happened on the main frame
-            // (not on a sub-resource like an image or script)
-            if (request.isForMainFrame) {
-                binding.webView.visibility = View.GONE
-                binding.errorView.visibility = View.VISIBLE
-                binding.progressBar.visibility = View.GONE
-                binding.swipeRefresh.isRefreshing = false
-                cancelLoadTimeoutWatchdog()
-            }
-        }
-
-        override fun onReceivedSslError(
-            view: WebView,
-            handler: SslErrorHandler,
-            error: SslError
-        ) {
-            // Never bypass SSL errors in production - protects user security
-            handler.cancel()
-            binding.webView.visibility = View.GONE
-            binding.errorView.visibility = View.VISIBLE
-            binding.progressBar.visibility = View.GONE
-            binding.swipeRefresh.isRefreshing = false
-            cancelLoadTimeoutWatchdog()
-            Toast.makeText(this@MainActivity, "Security certificate error, cannot load page", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    // WebChromeClient: progress bar + file chooser (camera/gallery)
-    private inner class CropGuardWebChromeClient : WebChromeClient() {
-
-        override fun onProgressChanged(view: WebView, newProgress: Int) {
-            super.onProgressChanged(view, newProgress)
-            binding.progressBar.progress = newProgress
-            if (newProgress >= 100) binding.progressBar.visibility = View.GONE
-        }
-
-        override fun onShowFileChooser(
-            webView: WebView,
-            callback: ValueCallback<Array<Uri>>,
-            params: FileChooserParams
-        ): Boolean {
-            filePathCallback = callback
-            pendingFileChooserParams = params
-
-            if (isCameraPermissionGranted()) {
-                launchImageChooser(params)
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                launchCamera()
             } else {
-                pendingCameraPermissionRequest = { launchImageChooser(pendingFileChooserParams) }
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-            return true
-        }
-
-        // Required for navigator.mediaDevices.getUserMedia() (direct in-page camera,
-        // using <video> + canvas, NOT through <input type="file">).
-        // Without this override, the web page always reports "Cannot access camera".
-        override fun onPermissionRequest(request: PermissionRequest) {
-            val needsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-            val needsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
-
-            if (!needsCamera && !needsMic) {
-                request.deny()
-                return
-            }
-
-            runOnUiThread {
-                if (isCameraPermissionGranted()) {
-                    request.grant(request.resources)
-                } else {
-                    pendingWebPermissionRequest = request
-                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                // Khong co quyen - fallback sang gallery
+                cameraCallback?.let { cb ->
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "if(window['$cb'])window['$cb'](null,'no_permission')", null
+                        )
+                    }
                 }
+                cameraCallback = null
             }
         }
     }
 
-    private fun isCameraPermissionGranted(): Boolean =
-        packageManager.checkPermission(Manifest.permission.CAMERA, packageName) ==
-            PackageManager.PERMISSION_GRANTED
-
-    // Opens the file chooser dialog. Reads the actual file type the web page
-    // requested (params.acceptTypes) instead of always hardcoding "image" type -
-    // important for the "Teach AI" tab which accepts both PDF and images.
-    // Tries multiple MIME type fallbacks (specific -> image -> any file) so
-    // devices missing a full file manager still find something that works,
-    // instead of crashing or failing outright on ActivityNotFoundException.
-    private fun launchImageChooser(params: WebChromeClient.FileChooserParams?) {
-        val mimeWildcard = "*" + "/" + "*"
-        val mimeImage = "image" + "/" + "*"
-        val acceptTypes = params?.acceptTypes?.filter { it.isNotBlank() } ?: emptyList()
-        val wantsImage = acceptTypes.isEmpty() || acceptTypes.any { it.startsWith("image") }
-
-        // Camera intent - only added if the web page accepts images
-        val cameraIntent: Intent? = if (wantsImage) {
-            try {
-                val photoFile = createImageFile()
-                photoFile?.let { file ->
-                    cameraPhotoUri = FileProvider.getUriForFile(
-                        this, "$packageName.fileprovider", file
-                    )
-                    Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                        putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
-                        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                    }
-                }
-            } catch (e: Exception) {
-                null
-            }
-        } else null
-
-        // Try a sequence of gallery intents from most specific to most permissive.
-        // IMPORTANT: when the web page accepts both PDF and images (the "Teach AI"
-        // tab), we must never fall back to an image-only picker before trying a
-        // picker that also allows PDF - otherwise PDF selection becomes
-        // impossible even though the page explicitly asked for it.
-        //
-        // Note: params.acceptTypes can contain raw HTML accept values like
-        // ".pdf" (a file extension) rather than a proper MIME type. Android's
-        // DocumentsUI only understands real MIME types in EXTRA_MIME_TYPES
-        // (e.g. "application/pdf"), so passing ".pdf" through unmodified makes
-        // it silently filter out all PDF files instead of showing them.
-        val acceptsPdf = acceptTypes.any { it.contains("pdf", ignoreCase = true) }
-        val normalizedMimeTypes = acceptTypes.mapNotNull { raw ->
-            when {
-                raw.contains("/") -> raw
-                raw.contains("pdf", ignoreCase = true) -> "application" + "/" + "pdf"
-                else -> null
-            }
-        }.distinct()
-
-        val candidateMimeTypes = buildList {
-            if (acceptsPdf) {
-                // An unfiltered picker reliably shows every file type, PDFs
-                // included. Try this first since EXTRA_MIME_TYPES support
-                // varies a lot across device file manager implementations.
-                add(mimeWildcard to null)
-                if (normalizedMimeTypes.isNotEmpty()) {
-                    add(mimeWildcard to normalizedMimeTypes.toTypedArray())
-                }
-            } else if (wantsImage) {
-                add(mimeImage to null)
-                add(mimeWildcard to null)
-            } else {
-                add(mimeWildcard to null)
-            }
-        }.distinctBy { it.first to (it.second?.joinToString() ?: "") }
-
-        for ((mimeType, extraMimeTypes) in candidateMimeTypes) {
-            try {
-                val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                    type = mimeType
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    if (extraMimeTypes != null) {
-                        putExtra(Intent.EXTRA_MIME_TYPES, extraMimeTypes)
-                    }
-                }
-
-                val chooserIntent = Intent.createChooser(galleryIntent, "Choose file").apply {
-                    if (cameraIntent != null) {
-                        putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
-                    }
-                }
-
-                fileChooserLauncher.launch(chooserIntent)
-                pendingFileChooserParams = null
-                return
-            } catch (e: Exception) {
-                // This MIME type combo couldn't be resolved on this device,
-                // try the next, more permissive option.
-            }
+    private fun launchCamera() {
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+        if (intent.resolveActivity(packageManager) != null) {
+            val photoFile = createImageFile()
+            photoUri = FileProvider.getUriForFile(
+                this,
+                "${packageName}.fileprovider",
+                photoFile
+            )
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            cameraLauncher.launch(intent)
         }
-
-        // Every fallback failed - no app on this device can handle file picking
-        Toast.makeText(this, "No file picker app found on this device", Toast.LENGTH_LONG).show()
-        filePathCallback?.onReceiveValue(null)
-        filePathCallback = null
-        pendingFileChooserParams = null
     }
 
-    private fun createImageFile(): File? = try {
+    private fun createImageFile(): File {
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-        File.createTempFile("cropguard_${System.currentTimeMillis()}_", ".jpg", storageDir)
-    } catch (e: Exception) {
-        null
-    }
-
-    private fun startLoadTimeoutWatchdog() {
-        cancelLoadTimeoutWatchdog()
-        val runnable = Runnable {
-            // Page still hasn't finished loading after LOAD_TIMEOUT_MS -> treat as
-            // a network error, do not let the app hang
-            binding.webView.stopLoading()
-            binding.webView.visibility = View.GONE
-            binding.errorView.visibility = View.VISIBLE
-            binding.progressBar.visibility = View.GONE
-            binding.swipeRefresh.isRefreshing = false
+        return File.createTempFile("CROPGUARD_${timestamp}_", ".jpg", storageDir).also {
+            currentPhotoPath = it.absolutePath
         }
-        loadTimeoutRunnable = runnable
-        loadTimeoutHandler.postDelayed(runnable, LOAD_TIMEOUT_MS)
     }
 
-    private fun cancelLoadTimeoutWatchdog() {
-        loadTimeoutRunnable?.let { loadTimeoutHandler.removeCallbacks(it) }
-        loadTimeoutRunnable = null
-    }
+    private fun handleCameraResult() {
+        val cb = cameraCallback ?: return
+        cameraCallback = null
 
-    // Check if knowledge base has grown since last app open.
-    // Runs on a background thread, shows a small Snackbar if new entries exist.
-    // Does nothing if the server is unreachable (silent fail).
-    private fun checkKnowledgeUpdate() {
-        val prefs = getSharedPreferences(Config.PREF_NAME, Context.MODE_PRIVATE)
-        val lastCount = prefs.getInt(Config.PREF_LAST_COUNT, 0)
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val conn = URL(Config.VERSION_URL).openConnection().apply {
-                    connectTimeout = 5000
-                    readTimeout = 5000
+        try {
+            // Doc anh tu file, compress va chuyen sang base64
+            val bitmap = BitmapFactory.decodeFile(currentPhotoPath)
+            if (bitmap == null) {
+                webView.post {
+                    webView.evaluateJavascript("if(window['$cb'])window['$cb'](null,'decode_error')", null)
                 }
-                val json = JSONObject(conn.getInputStream().bufferedReader().readText())
-                val newCount = json.getInt("count")
+                return
+            }
 
-                // Save latest count for next time
-                prefs.edit().putInt(Config.PREF_LAST_COUNT, newCount).apply()
+            // Compress xuong max 1280px de tranh qua lon
+            val scaled = scaleBitmap(bitmap, 1280)
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+            val base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
 
-                val added = newCount - lastCount
-                if (lastCount > 0 && added > 0) {
-                    withContext(Dispatchers.Main) {
-                        Snackbar.make(
-                            binding.root,
-                            "Neu: +$added kien thuc sau benh moi (tong: $newCount)",
-                            Snackbar.LENGTH_LONG
-                        ).setAction("OK") {}.show()
-                    }
-                }
-            } catch (e: Exception) {
-                // Silent fail - do not bother the user if server is unreachable
+            // Goi callback ve JavaScript
+            val dataUrl = "data:image/jpeg;base64,$base64"
+            webView.post {
+                webView.evaluateJavascript(
+                    "if(window['$cb'])window['$cb']('$dataUrl','image/jpeg')", null
+                )
+            }
+
+            // Xoa file tam
+            File(currentPhotoPath).delete()
+
+        } catch (e: Exception) {
+            webView.post {
+                webView.evaluateJavascript("if(window['$cb'])window['$cb'](null,'error')", null)
             }
         }
     }
 
-    fun retryLoad() {
-        binding.errorView.visibility = View.GONE
-        binding.webView.visibility = View.VISIBLE
-        binding.webView.reload()
+    private fun handleGalleryResult(uri: Uri) {
+        val cb = cameraCallback ?: return
+        cameraCallback = null
+
+        try {
+            val inputStream = contentResolver.openInputStream(uri)
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream?.close()
+
+            if (bitmap == null) {
+                webView.post {
+                    webView.evaluateJavascript("if(window['$cb'])window['$cb'](null,'decode_error')", null)
+                }
+                return
+            }
+
+            val scaled = scaleBitmap(bitmap, 1280)
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+            val base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+
+            val dataUrl = "data:image/jpeg;base64,$base64"
+            webView.post {
+                webView.evaluateJavascript(
+                    "if(window['$cb'])window['$cb']('$dataUrl','image/jpeg')", null
+                )
+            }
+
+        } catch (e: Exception) {
+            webView.post {
+                webView.evaluateJavascript("if(window['$cb'])window['$cb'](null,'error')", null)
+            }
+        }
     }
 
-    override fun onDestroy() {
-        cancelLoadTimeoutWatchdog()
-        binding.webView.destroy()
-        super.onDestroy()
+    private fun scaleBitmap(bitmap: Bitmap, maxSize: Int): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= maxSize && h <= maxSize) return bitmap
+        val ratio = minOf(maxSize.toFloat() / w, maxSize.toFloat() / h)
+        return Bitmap.createScaledBitmap(bitmap, (w * ratio).toInt(), (h * ratio).toInt(), true)
+    }
+
+    private fun showCameraGalleryDialog() {
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Chọn nguồn ảnh")
+            .setItems(arrayOf("📷 Chụp ảnh", "🖼️ Chọn từ thư viện")) { _, which ->
+                when (which) {
+                    0 -> if (checkCameraPermission()) launchCamera() else requestCameraPermission()
+                    1 -> {
+                        val intent = Intent(Intent.ACTION_PICK).apply { type = "image/*" }
+                        galleryLauncher.launch(intent)
+                    }
+                }
+            }
+            .setNegativeButton("Hủy") { _, _ ->
+                cameraCallback?.let { cb ->
+                    webView.post {
+                        webView.evaluateJavascript("if(window['$cb'])window['$cb'](null)", null)
+                    }
+                }
+                cameraCallback = null
+            }
+            .create()
+        dialog.show()
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // INJECT BRIDGE HELPER - Them ham tien ich vao web
+    // ═══════════════════════════════════════════════════════
+    private fun injectBridgeHelper() {
+        val js = """
+            (function() {
+                if (window.__cropguardBridgeInjected) return;
+                window.__cropguardBridgeInjected = true;
+                
+                // Helper: mo camera native
+                window.openNativeCameraAndroid = function(callback) {
+                    var cbName = '__cgcb_' + Date.now();
+                    window[cbName] = function(base64, mimeType) {
+                        delete window[cbName];
+                        callback(base64, mimeType);
+                    };
+                    CropGuardNative.openCamera(cbName);
+                };
+                
+                // Helper: mo gallery native
+                window.openNativeGalleryAndroid = function(callback) {
+                    var cbName = '__cgcb_' + Date.now();
+                    window[cbName] = function(base64, mimeType) {
+                        delete window[cbName];
+                        callback(base64, mimeType);
+                    };
+                    CropGuardNative.openGallery(cbName);
+                };
+                
+                // Helper: chon camera hoac gallery
+                window.openNativeCameraOrGalleryAndroid = function(callback) {
+                    var cbName = '__cgcb_' + Date.now();
+                    window[cbName] = function(base64, mimeType) {
+                        delete window[cbName];
+                        callback(base64, mimeType);
+                    };
+                    CropGuardNative.openCameraOrGallery(cbName);
+                };
+                
+                console.log('CropGuard Android Bridge injected!');
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // UI HELPERS
+    // ═══════════════════════════════════════════════════════
+    private fun setupSwipeRefresh() {
+        swipeRefreshLayout.setColorSchemeResources(R.color.primary_green)
+        swipeRefreshLayout.setOnRefreshListener {
+            webView.reload()
+        }
+    }
+
+    private fun setupErrorLayout() {
+        val retryButton = errorLayout.findViewById<Button>(R.id.retryButton)
+        retryButton?.setOnClickListener {
+            errorLayout.visibility = View.GONE
+            webView.reload()
+        }
+    }
+
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
     }
 }

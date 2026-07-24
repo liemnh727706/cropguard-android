@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-cache-path name="camera_images" path="." />
-    <cache-path name="cache" path="." />
+<paths>
+    <!-- Thu muc anh cua app -->
+    <external-files-path
+        name="cropguard_images"
+        path="Pictures/" />
+    <!-- Thu muc cache -->
+    <cache-path
+        name="cropguard_cache"
+        path="." />
 </paths>
